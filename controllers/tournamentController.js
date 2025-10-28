@@ -171,26 +171,31 @@ exports.createTournament = asyncHandler(async (req, res) => {
     let normalizedPrizes = {};
     
     if (prizeType === 'fixed') {
+      // Use ordered amounts array for fixed prizes. index 0 => 1st, index 1 => 2nd, ...
       normalizedPrizes = {
         fixed: {
-          '1st': 0,
-          '2nd': 0,
-          '3rd': 0,
-          '4th': 0,
-          '5th': 0,
+          amounts: [],
           additional: []
         }
       };
-      
+
       if (prizes && prizes.fixed && typeof prizes.fixed === 'object') {
         console.log('Prizes fixed object:', JSON.stringify(prizes.fixed));
-        
-        if (prizes.fixed['1st']) normalizedPrizes.fixed['1st'] = parseFloat(prizes.fixed['1st']) || 0;
-        if (prizes.fixed['2nd']) normalizedPrizes.fixed['2nd'] = parseFloat(prizes.fixed['2nd']) || 0;
-        if (prizes.fixed['3rd']) normalizedPrizes.fixed['3rd'] = parseFloat(prizes.fixed['3rd']) || 0;
-        if (prizes.fixed['4th']) normalizedPrizes.fixed['4th'] = parseFloat(prizes.fixed['4th']) || 0;
-        if (prizes.fixed['5th']) normalizedPrizes.fixed['5th'] = parseFloat(prizes.fixed['5th']) || 0;
-        
+
+        // Accept both new format (amounts array) and legacy keys ('1st','2nd',...)
+        if (Array.isArray(prizes.fixed.amounts)) {
+          // Accept any-length amounts array
+          normalizedPrizes.fixed.amounts = prizes.fixed.amounts.map(a => parseFloat(a) || 0);
+        } else {
+          const labels = ['1st', '2nd', '3rd', '4th', '5th'];
+          // Only add entries for legacy keys that are present (do not pad)
+          labels.forEach((lbl) => {
+            if (typeof prizes.fixed[lbl] !== 'undefined') {
+              normalizedPrizes.fixed.amounts.push(parseFloat(prizes.fixed[lbl]) || 0);
+            }
+          });
+        }
+
         if (prizes.fixed.additional && Array.isArray(prizes.fixed.additional)) {
           normalizedPrizes.fixed.additional = prizes.fixed.additional.map(prize => ({
             position: parseInt(prize.position) || 0,
@@ -255,12 +260,8 @@ exports.createTournament = asyncHandler(async (req, res) => {
     let totalPrizePool = 0;
     try {
       if (prizeType === 'fixed') {
-        totalPrizePool = normalizedPrizes.fixed['1st'] + 
-                        normalizedPrizes.fixed['2nd'] + 
-                        normalizedPrizes.fixed['3rd'] + 
-                        normalizedPrizes.fixed['4th'] + 
-                        normalizedPrizes.fixed['5th'];
-                        
+  const amounts = Array.isArray(normalizedPrizes.fixed.amounts) ? normalizedPrizes.fixed.amounts : [];
+  totalPrizePool = amounts.reduce((s, v) => s + (parseFloat(v) || 0), 0);
         if (normalizedPrizes.fixed.additional && normalizedPrizes.fixed.additional.length) {
           totalPrizePool += normalizedPrizes.fixed.additional.reduce((sum, prize) => sum + (prize.amount || 0), 0);
         }
@@ -974,16 +975,15 @@ const calculatePrizeDistribution = async (tournament, results) => {
   const sortedResults = results.sort((a, b) => a.position - b.position);
   
   if (prizeType === 'fixed') {
-    const fixedPrizes = prizes.fixed;
-    
-    // Standard positions
-    const positions = ['1st', '2nd', '3rd', '4th', '5th'];
-    
-    for (let i = 0; i < sortedResults.length && i < positions.length; i++) {
+    const fixedPrizes = prizes.fixed || {};
+
+    // Standard positions use the ordered amounts array
+    const amounts = Array.isArray(fixedPrizes.amounts) ? fixedPrizes.amounts : [];
+
+    for (let i = 0; i < sortedResults.length && i < 5; i++) {
       const result = sortedResults[i];
-      const position = positions[i];
-      const amount = fixedPrizes[position] || 0;
-      
+      const amount = parseFloat(amounts[i]) || 0;
+
       if (amount > 0) {
         distribution.push({
           userId: result.userId,
@@ -992,7 +992,7 @@ const calculatePrizeDistribution = async (tournament, results) => {
         });
       }
     }
-    
+
     // Additional prizes
     if (fixedPrizes.additional && fixedPrizes.additional.length > 0) {
       for (const additionalPrize of fixedPrizes.additional) {
@@ -1304,11 +1304,23 @@ exports.distributeTournamentPrizes = asyncHandler(async (req, res) => {
       
       // Calculate prize based on tournament prize type
       if (tournament.prizeType === 'fixed') {
-        if (tournament.prizes.fixed[position]) {
-          prizeAmount = tournament.prizes.fixed[position];
+        const fixed = tournament.prizes.fixed || {};
+        // Try to resolve numeric position (e.g., '1st' -> 1)
+        const posNum = parseInt(String(position).replace(/\D/g, ''), 10);
+
+        // Read from ordered amounts array if available
+        if (!isNaN(posNum) && Array.isArray(fixed.amounts)) {
+          const arrAmount = parseFloat(fixed.amounts[posNum - 1]) || 0;
+          if (arrAmount > 0) {
+            prizeAmount = arrAmount;
+          } else {
+            // fallback to additional
+            const additionalPrize = fixed.additional?.find(ap => ap.position === posNum);
+            prizeAmount = additionalPrize ? additionalPrize.amount : 0;
+          }
         } else {
-          // Handle additional positions
-          const additionalPrize = tournament.prizes.fixed.additional?.find(
+          // fallback: attempt to find in additional prizes
+          const additionalPrize = fixed.additional?.find(
             ap => ap.position.toString() === position.replace(/\D/g, '')
           );
           prizeAmount = additionalPrize ? additionalPrize.amount : 0;
