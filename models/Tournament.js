@@ -51,11 +51,8 @@ const TournamentSchema = new mongoose.Schema({
   },
   prizes: {
     fixed: {
-      '1st': { type: Number, default: 0 },
-      '2nd': { type: Number, default: 0 },
-      '3rd': { type: Number, default: 0 },
-      '4th': { type: Number, default: 0 },
-      '5th': { type: Number, default: 0 },
+      // Ordered amounts array: index 0 => 1st, index 1 => 2nd, etc.
+      amounts: { type: [Number], default: [] },
       additional: [{ position: Number, amount: Number }]
     },
     percentage: {
@@ -421,5 +418,58 @@ TournamentSchema.pre('save', function(next) {
 // Ensure virtual fields are included in JSON output
 TournamentSchema.set('toJSON', { virtuals: true });
 TournamentSchema.set('toObject', { virtuals: true });
+
+// Backwards-compatibility: when a document is loaded, populate fixed.amounts from
+// legacy keys ('1st','2nd',...) if amounts is missing. Also normalize before save.
+TournamentSchema.post('init', function(doc) {
+  try {
+    if (!doc || !doc.prizes || !doc.prizes.fixed) return;
+    const fixed = doc.prizes.fixed;
+    if (Array.isArray(fixed.amounts)) return; // already present
+
+    const labels = ['1st', '2nd', '3rd', '4th', '5th'];
+    const amounts = [];
+    // Build amounts only for legacy keys that exist (do not pad to a fixed length)
+    labels.forEach(lbl => {
+      if (typeof fixed[lbl] !== 'undefined') {
+        amounts.push(Number(fixed[lbl]) || 0);
+      }
+    });
+
+    if (amounts.length > 0) {
+      // Attach amounts array in-memory for compatibility with code reading fixed.amounts
+      fixed.amounts = amounts;
+      doc.prizes.fixed = fixed;
+    }
+    doc.prizes.fixed = fixed;
+  } catch (err) {
+    console.error('Tournament compatibility post-init error:', err);
+  }
+});
+
+// Ensure any legacy-shaped document is normalized before saving to DB
+TournamentSchema.pre('save', function(next) {
+  try {
+    if (this.prizes && this.prizes.fixed) {
+      const fixed = this.prizes.fixed;
+      if (!Array.isArray(fixed.amounts)) {
+        const labels = ['1st', '2nd', '3rd', '4th', '5th'];
+        const amounts = [];
+        labels.forEach(lbl => {
+          if (typeof fixed[lbl] !== 'undefined') {
+            amounts.push(Number(fixed[lbl]) || 0);
+          }
+        });
+        if (amounts.length > 0) {
+          fixed.amounts = amounts;
+          this.prizes.fixed = fixed;
+        }
+      }
+    }
+    next();
+  } catch (err) {
+    next(err);
+  }
+});
 
 module.exports = mongoose.model('Tournament', TournamentSchema);

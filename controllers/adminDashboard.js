@@ -1282,16 +1282,16 @@ function calculateTotalPrizePool(prizes, prizeType) {
   
   try {
     if (prizeType === 'fixed' && prizes.fixed) {
-      totalPrizePool = (prizes.fixed['1st'] || 0) + 
-                      (prizes.fixed['2nd'] || 0) + 
-                      (prizes.fixed['3rd'] || 0) + 
-                      (prizes.fixed['4th'] || 0) + 
-                      (prizes.fixed['5th'] || 0);
-                      
+      // Sum the ordered amounts array (index 0 => 1st, index 1 => 2nd, ...)
+  const amounts = Array.isArray(prizes.fixed.amounts) ? prizes.fixed.amounts : [];
+  const amountsSum = amounts.reduce((s, v) => s + (parseFloat(v) || 0), 0);
+
       // Add additional prizes if any
-      if (prizes.fixed.additional && prizes.fixed.additional.length) {
-        totalPrizePool += prizes.fixed.additional.reduce((sum, prize) => sum + (prize.amount || 0), 0);
-      }
+      const additionalSum = (prizes.fixed.additional && prizes.fixed.additional.length)
+        ? prizes.fixed.additional.reduce((sum, prize) => sum + (prize.amount || 0), 0)
+        : 0;
+
+  totalPrizePool = amountsSum + additionalSum;
     } else if (prizeType === 'percentage' && prizes.percentage) {
       // For percentage, we use the base prize pool
       totalPrizePool = prizes.percentage.basePrizePool || 0;
@@ -4548,12 +4548,17 @@ exports.getTournamentActivity = async (req, res) => {
                 {
                   case: { $eq: ['$prizeType', 'fixed'] },
                   then: {
+                    // Sum first five elements of fixed.amounts array and any additional prizes
                     $add: [
-                      { $ifNull: ['$prizes.fixed.1st', 0] },
-                      { $ifNull: ['$prizes.fixed.2nd', 0] },
-                      { $ifNull: ['$prizes.fixed.3rd', 0] },
-                      { $ifNull: ['$prizes.fixed.4th', 0] },
-                      { $ifNull: ['$prizes.fixed.5th', 0] },
+                      {
+                        $sum: {
+                              $map: {
+                                input: { $ifNull: ['$prizes.fixed.amounts', []] },
+                                as: 'amt',
+                                in: { $ifNull: ['$$amt', 0] }
+                              }
+                            }
+                      },
                       {
                         $sum: {
                           $map: {
@@ -4804,20 +4809,24 @@ exports.getTournamentActivityDetails = async (req, res) => {
     // Calculate expected prize distribution
     let expectedPrizes = [];
     if (tournament.prizeType === 'fixed') {
-      const prizes = tournament.prizes.fixed;
-      ['1st', '2nd', '3rd', '4th', '5th'].forEach((position, index) => {
-        if (prizes[position] > 0) {
+      const fixed = tournament.prizes.fixed || {};
+      const amounts = Array.isArray(fixed.amounts) ? fixed.amounts : [];
+      const labels = ['1st', '2nd', '3rd', '4th', '5th'];
+
+      amounts.forEach((amt, index) => {
+        const amount = parseFloat(amt) || 0;
+        if (amount > 0) {
           expectedPrizes.push({
-            position: position,
-            amount: prizes[position],
+            position: labels[index] || `${index + 1}${getOrdinalSuffix(index + 1)}`,
+            amount: amount,
             positionNumber: index + 1
           });
         }
       });
-      
+
       // Add additional prizes
-      if (prizes.additional && prizes.additional.length > 0) {
-        prizes.additional.forEach(prize => {
+      if (fixed.additional && fixed.additional.length > 0) {
+        fixed.additional.forEach(prize => {
           expectedPrizes.push({
             position: `${prize.position}${getOrdinalSuffix(prize.position)}`,
             amount: prize.amount,
