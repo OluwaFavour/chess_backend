@@ -346,6 +346,10 @@ exports.createTournament = asyncHandler(async (req, res) => {
 
     // Check if entry fee is higher than total prize pool
     if (parsedEntryFee > totalPrizePool) {
+      // Log the discrepancy for debugging
+      console.error(
+        `Entry fee (${parsedEntryFee}) exceeds total prize pool (${totalPrizePool})`
+      );
       return res.status(400).json({
         message: "Entry fee cannot be higher than the total prize pool",
         entryFee: parsedEntryFee,
@@ -850,12 +854,10 @@ exports.registerForTournament = asyncHandler(async (req, res) => {
 
   // Check if user has Lichess account linked
   if (!user.lichessUsername) {
-    return res
-      .status(400)
-      .json({
-        message:
-          "You need to link your Lichess account to register for tournaments",
-      });
+    return res.status(400).json({
+      message:
+        "You need to link your Lichess account to register for tournaments",
+    });
   }
 
   // Handle entry fee payment if needed
@@ -982,11 +984,9 @@ exports.submitTournamentResults = asyncHandler(async (req, res) => {
 
   // Check if user is the organizer
   if (tournament.organizer.toString() !== req.user.id) {
-    return res
-      .status(403)
-      .json({
-        message: "You are not authorized to submit results for this tournament",
-      });
+    return res.status(403).json({
+      message: "You are not authorized to submit results for this tournament",
+    });
   }
 
   // Validate results format
