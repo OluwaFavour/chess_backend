@@ -14,8 +14,8 @@ What changed
 - `models/Tournament.js` now defines:
 
   prizes.fixed:
-    - amounts: [Number]     // index 0 => 1st, index 1 => 2nd, index 2 => 3rd, ...
-    - additional: [{ position: Number, amount: Number }]
+  - amounts: [Number]     // index 0 => 1st, index 1 => 2nd, index 2 => 3rd, ...
+  - additional: [{ position: Number, amount: Number }]
 
 - Controllers updated to read/write `prizes.fixed.amounts`.
 - A compatibility layer was added (post-init and pre-save hooks) so the app can read legacy documents until you migrate the DB.
