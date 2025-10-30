@@ -196,10 +196,15 @@ exports.createTournament = asyncHandler(async (req, res) => {
         console.log("Prizes fixed object:", JSON.stringify(prizes.fixed));
 
         // Accept both new format (amounts array) and legacy keys ('1st','2nd',...)
-        if (Array.isArray(prizes.fixed)) {
-          // Accept any-length amounts array
-          normalizedPrizes.fixed.amounts = prizes.fixed.map(
+        if (Array.isArray(prizes.fixed?.amounts)) {
+          // New shape: prizes.fixed.amounts
+          normalizedPrizes.fixed.amounts = prizes.fixed.amounts.map(
             (a) => parseFloat(a) || 0
+          );
+        } else if (Array.isArray(prizes.fixed)) {
+          // Older clients may send prizes.fixed as an array directly
+          normalizedPrizes.fixed.amounts = prizes.fixed.map((a) =>
+            parseFloat(a) || 0
           );
         } else {
           const labels = ["1st", "2nd", "3rd", "4th", "5th"];
@@ -226,38 +231,32 @@ exports.createTournament = asyncHandler(async (req, res) => {
       normalizedPrizes = {
         percentage: {
           basePrizePool: 0,
-          "1st": 0,
-          "2nd": 0,
-          "3rd": 0,
-          "4th": 0,
-          "5th": 0,
+          // Ordered amounts array for percentage-based prizes: index 0 => 1st, index 1 => 2nd, etc.
+          amounts: [],
           additional: [],
         },
       };
 
-      if (
-        prizes &&
-        prizes.percentage &&
-        typeof prizes.percentage === "object"
-      ) {
+      if (prizes && prizes.percentage && typeof prizes.percentage === "object") {
         if (prizes.percentage.basePrizePool)
           normalizedPrizes.percentage.basePrizePool =
             parseFloat(prizes.percentage.basePrizePool) || 0;
-        if (prizes.percentage["1st"])
-          normalizedPrizes.percentage["1st"] =
-            parseFloat(prizes.percentage["1st"]) || 0;
-        if (prizes.percentage["2nd"])
-          normalizedPrizes.percentage["2nd"] =
-            parseFloat(prizes.percentage["2nd"]) || 0;
-        if (prizes.percentage["3rd"])
-          normalizedPrizes.percentage["3rd"] =
-            parseFloat(prizes.percentage["3rd"]) || 0;
-        if (prizes.percentage["4th"])
-          normalizedPrizes.percentage["4th"] =
-            parseFloat(prizes.percentage["4th"]) || 0;
-        if (prizes.percentage["5th"])
-          normalizedPrizes.percentage["5th"] =
-            parseFloat(prizes.percentage["5th"]) || 0;
+
+        // Accept both new format (amounts array) and legacy keys ('1st','2nd',...)
+        if (Array.isArray(prizes.percentage.amounts)) {
+          normalizedPrizes.percentage.amounts = prizes.percentage.amounts.map(
+            (a) => parseFloat(a) || 0
+          );
+        } else {
+          const labels = ["1st", "2nd", "3rd", "4th", "5th"];
+          labels.forEach((lbl) => {
+            if (typeof prizes.percentage[lbl] !== "undefined") {
+              normalizedPrizes.percentage.amounts.push(
+                parseFloat(prizes.percentage[lbl]) || 0
+              );
+            }
+          });
+        }
 
         if (
           prizes.percentage.additional &&
@@ -1079,7 +1078,8 @@ const calculatePrizeDistribution = async (tournament, results) => {
       ? fixedPrizes.amounts
       : [];
 
-    for (let i = 0; i < sortedResults.length && i < 5; i++) {
+    const maxFixed = Math.min(sortedResults.length, amounts.length);
+    for (let i = 0; i < maxFixed; i++) {
       const result = sortedResults[i];
       const amount = parseFloat(amounts[i]) || 0;
 
@@ -1108,15 +1108,17 @@ const calculatePrizeDistribution = async (tournament, results) => {
       }
     }
   } else if (prizeType === "percentage") {
-    const percentagePrizes = prizes.percentage;
-    const basePrizePool = percentagePrizes.basePrizePool;
+    const percentagePrizes = prizes.percentage || {};
+    const basePrizePool = percentagePrizes.basePrizePool || 0;
 
-    const positions = ["1st", "2nd", "3rd", "4th", "5th"];
+    const pctAmounts = Array.isArray(percentagePrizes.amounts)
+      ? percentagePrizes.amounts
+      : [];
 
-    for (let i = 0; i < sortedResults.length && i < positions.length; i++) {
+    const maxPct = Math.min(sortedResults.length, pctAmounts.length);
+    for (let i = 0; i < maxPct; i++) {
       const result = sortedResults[i];
-      const position = positions[i];
-      const percentage = percentagePrizes[position] || 0;
+      const percentage = parseFloat(pctAmounts[i]) || 0;
       const amount = (basePrizePool * percentage) / 100;
 
       if (amount > 0) {
@@ -1125,6 +1127,24 @@ const calculatePrizeDistribution = async (tournament, results) => {
           position: i + 1,
           amount: Math.round(amount * 100) / 100, // Round to 2 decimal places
         });
+      }
+    }
+
+    // Handle additional percentage prizes (explicit positions)
+    if (percentagePrizes.additional && Array.isArray(percentagePrizes.additional)) {
+      for (const additionalPrize of percentagePrizes.additional) {
+        const pos = additionalPrize.position;
+        const result = sortedResults.find((r) => r.position === pos);
+        if (result && additionalPrize.percentage) {
+          const amount = (basePrizePool * additionalPrize.percentage) / 100;
+          if (amount > 0) {
+            distribution.push({
+              userId: result.userId,
+              position: pos,
+              amount: Math.round(amount * 100) / 100,
+            });
+          }
+        }
       }
     }
   } else if (prizeType === "special") {
@@ -1510,14 +1530,19 @@ exports.distributeTournamentPrizes = asyncHandler(async (req, res) => {
           prizeAmount = additionalPrize ? additionalPrize.amount : 0;
         }
       } else if (tournament.prizeType === "percentage") {
-        const basePrizePool = tournament.prizes.percentage.basePrizePool || 0;
-        let percentage = 0;
+        const basePrizePool =
+          (tournament.prizes && tournament.prizes.percentage && tournament.prizes.percentage.basePrizePool) || 0;
 
-        if (tournament.prizes.percentage[position]) {
-          percentage = tournament.prizes.percentage[position];
+        let percentage = 0;
+        const pct = (tournament.prizes && tournament.prizes.percentage) || {};
+        const pctAmounts = Array.isArray(pct.amounts) ? pct.amounts : [];
+        const posNum = parseInt(String(position).replace(/\D/g, ""), 10);
+
+        if (!isNaN(posNum) && typeof pctAmounts[posNum - 1] !== "undefined") {
+          percentage = parseFloat(pctAmounts[posNum - 1]) || 0;
         } else {
           // Handle additional positions
-          const additionalPrize = tournament.prizes.percentage.additional?.find(
+          const additionalPrize = pct.additional?.find(
             (ap) => ap.position.toString() === position.replace(/\D/g, "")
           );
           percentage = additionalPrize ? additionalPrize.percentage : 0;

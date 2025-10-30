@@ -26,45 +26,59 @@ const Tournament = require("../models/Tournament");
 
         if (Array.isArray(fixed.amounts)) {
           // already migrated
-          continue;
+          // but still check percentage below
         }
-
-        // Build amounts array from legacy keys if present
+        
+        // Build amounts array from legacy keys if present for fixed
         const newAmounts = labels.map((lbl) => {
           const val = fixed[lbl];
           return typeof val !== "undefined" ? parseFloat(val) || 0 : 0;
         });
 
         // If all zeros and no additional, skip unless explicit legacy keys exist
-        const legacyKeysExist = labels.some(
-          (lbl) => typeof fixed[lbl] !== "undefined"
-        );
-        if (!legacyKeysExist) {
-          // Nothing to migrate for this tournament
+        const legacyKeysExist = labels.some((lbl) => typeof fixed[lbl] !== "undefined");
+
+        // Prepare update skeleton
+        const update = { $set: {}, $unset: {} };
+
+        if (legacyKeysExist) {
+          update.$set["prizes.fixed.amounts"] = newAmounts;
+          labels.forEach((lbl) => {
+            update.$unset[`prizes.fixed.${lbl}`] = "";
+          });
+        }
+
+        // Also migrate percentage-shaped legacy fields into prizes.percentage.amounts if present
+        const pct = t.prizes && t.prizes.percentage ? t.prizes.percentage : null;
+        if (pct && !Array.isArray(pct.amounts)) {
+          const newPctAmounts = labels.map((lbl) => {
+            const val = pct[lbl];
+            return typeof val !== "undefined" ? parseFloat(val) || 0 : 0;
+          });
+
+          const pctLegacyExist = labels.some((lbl) => typeof pct[lbl] !== "undefined");
+          if (pctLegacyExist) {
+            update.$set["prizes.percentage.amounts"] = newPctAmounts;
+            labels.forEach((lbl) => {
+              update.$unset[`prizes.percentage.${lbl}`] = "";
+            });
+          }
+        }
+
+        // If update has nothing to set/unset, skip
+        if (Object.keys(update.$set).length === 0 && Object.keys(update.$unset).length === 0) {
           continue;
         }
 
-        // Prepare update: set amounts and unset legacy keys
-        const unsetObj = {};
-        labels.forEach((lbl) => {
-          unsetObj[`prizes.fixed.${lbl}`] = "";
-        });
-
-        const update = {
-          $set: { "prizes.fixed.amounts": newAmounts },
-        };
-
-        update.$unset = unsetObj;
+        // Clean up empty objects (MongoDB driver doesn't like empty $unset or $set)
+        if (Object.keys(update.$set).length === 0) delete update.$set;
+        if (Object.keys(update.$unset).length === 0) delete update.$unset;
 
         const res = await Tournament.updateOne({ _id: t._id }, update);
 
         if (res.modifiedCount && res.modifiedCount > 0) {
           updated++;
-          console.log(
-            `Migrated tournament ${t._id} -> amounts: ${JSON.stringify(
-              newAmounts
-            )}`
-          );
+          console.log(`Migrated tournament ${t._id} -> update: ${JSON.stringify(update)}`);
         } else {
           console.log(`No update performed for ${t._id}`);
         }

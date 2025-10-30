@@ -57,11 +57,8 @@ const TournamentSchema = new mongoose.Schema({
     },
     percentage: {
       basePrizePool: { type: Number },
-      "1st": { type: Number, default: 0 },
-      "2nd": { type: Number, default: 0 },
-      "3rd": { type: Number, default: 0 },
-      "4th": { type: Number, default: 0 },
-      "5th": { type: Number, default: 0 },
+      // Ordered amounts array for percentage-based prizes: index 0 => 1st, index 1 => 2nd, etc.
+      amounts: { type: [Number], default: [] },
       additional: [{ position: Number, percentage: Number }],
     },
     special: {
@@ -527,6 +524,27 @@ TournamentSchema.post("init", function (doc) {
       doc.prizes.fixed = fixed;
     }
     doc.prizes.fixed = fixed;
+
+    // Also support legacy percentage keys ('1st'..'5th') by populating prizes.percentage.amounts
+    try {
+      if (doc.prizes.percentage) {
+        const pct = doc.prizes.percentage;
+        if (!Array.isArray(pct.amounts)) {
+          const pctAmounts = [];
+          labels.forEach((lbl) => {
+            if (typeof pct[lbl] !== "undefined") {
+              pctAmounts.push(Number(pct[lbl]) || 0);
+            }
+          });
+          if (pctAmounts.length > 0) {
+            pct.amounts = pctAmounts;
+            doc.prizes.percentage = pct;
+          }
+        }
+      }
+    } catch (inner) {
+      console.error("Tournament compatibility post-init (percentage) error:", inner);
+    }
   } catch (err) {
     console.error("Tournament compatibility post-init error:", err);
   }
@@ -548,6 +566,23 @@ TournamentSchema.pre("save", function (next) {
         if (amounts.length > 0) {
           fixed.amounts = amounts;
           this.prizes.fixed = fixed;
+        }
+      }
+    }
+    // Normalize percentage-shaped legacy fields into percentage.amounts
+    if (this.prizes && this.prizes.percentage) {
+      const pct = this.prizes.percentage;
+      if (!Array.isArray(pct.amounts)) {
+        const labels = ["1st", "2nd", "3rd", "4th", "5th"];
+        const pctAmounts = [];
+        labels.forEach((lbl) => {
+          if (typeof pct[lbl] !== "undefined") {
+            pctAmounts.push(Number(pct[lbl]) || 0);
+          }
+        });
+        if (pctAmounts.length > 0) {
+          pct.amounts = pctAmounts;
+          this.prizes.percentage = pct;
         }
       }
     }
