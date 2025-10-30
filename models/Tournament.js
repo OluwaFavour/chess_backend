@@ -543,7 +543,10 @@ TournamentSchema.post("init", function (doc) {
         }
       }
     } catch (inner) {
-      console.error("Tournament compatibility post-init (percentage) error:", inner);
+      console.error(
+        "Tournament compatibility post-init (percentage) error:",
+        inner
+      );
     }
   } catch (err) {
     console.error("Tournament compatibility post-init error:", err);

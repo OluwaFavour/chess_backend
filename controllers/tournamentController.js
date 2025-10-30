@@ -203,8 +203,8 @@ exports.createTournament = asyncHandler(async (req, res) => {
           );
         } else if (Array.isArray(prizes.fixed)) {
           // Older clients may send prizes.fixed as an array directly
-          normalizedPrizes.fixed.amounts = prizes.fixed.map((a) =>
-            parseFloat(a) || 0
+          normalizedPrizes.fixed.amounts = prizes.fixed.map(
+            (a) => parseFloat(a) || 0
           );
         } else {
           const labels = ["1st", "2nd", "3rd", "4th", "5th"];
@@ -237,7 +237,11 @@ exports.createTournament = asyncHandler(async (req, res) => {
         },
       };
 
-      if (prizes && prizes.percentage && typeof prizes.percentage === "object") {
+      if (
+        prizes &&
+        prizes.percentage &&
+        typeof prizes.percentage === "object"
+      ) {
         if (prizes.percentage.basePrizePool)
           normalizedPrizes.percentage.basePrizePool =
             parseFloat(prizes.percentage.basePrizePool) || 0;
@@ -1131,7 +1135,10 @@ const calculatePrizeDistribution = async (tournament, results) => {
     }
 
     // Handle additional percentage prizes (explicit positions)
-    if (percentagePrizes.additional && Array.isArray(percentagePrizes.additional)) {
+    if (
+      percentagePrizes.additional &&
+      Array.isArray(percentagePrizes.additional)
+    ) {
       for (const additionalPrize of percentagePrizes.additional) {
         const pos = additionalPrize.position;
         const result = sortedResults.find((r) => r.position === pos);
@@ -1531,7 +1538,10 @@ exports.distributeTournamentPrizes = asyncHandler(async (req, res) => {
         }
       } else if (tournament.prizeType === "percentage") {
         const basePrizePool =
-          (tournament.prizes && tournament.prizes.percentage && tournament.prizes.percentage.basePrizePool) || 0;
+          (tournament.prizes &&
+            tournament.prizes.percentage &&
+            tournament.prizes.percentage.basePrizePool) ||
+          0;
 
         let percentage = 0;
         const pct = (tournament.prizes && tournament.prizes.percentage) || {};

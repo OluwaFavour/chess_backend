@@ -28,7 +28,7 @@ const Tournament = require("../models/Tournament");
           // already migrated
           // but still check percentage below
         }
-        
+
         // Build amounts array from legacy keys if present for fixed
         const newAmounts = labels.map((lbl) => {
           const val = fixed[lbl];
@@ -36,7 +36,9 @@ const Tournament = require("../models/Tournament");
         });
 
         // If all zeros and no additional, skip unless explicit legacy keys exist
-        const legacyKeysExist = labels.some((lbl) => typeof fixed[lbl] !== "undefined");
+        const legacyKeysExist = labels.some(
+          (lbl) => typeof fixed[lbl] !== "undefined"
+        );
 
         // Prepare update skeleton
         const update = { $set: {}, $unset: {} };
@@ -49,14 +51,17 @@ const Tournament = require("../models/Tournament");
         }
 
         // Also migrate percentage-shaped legacy fields into prizes.percentage.amounts if present
-        const pct = t.prizes && t.prizes.percentage ? t.prizes.percentage : null;
+        const pct =
+          t.prizes && t.prizes.percentage ? t.prizes.percentage : null;
         if (pct && !Array.isArray(pct.amounts)) {
           const newPctAmounts = labels.map((lbl) => {
             const val = pct[lbl];
             return typeof val !== "undefined" ? parseFloat(val) || 0 : 0;
           });
 
-          const pctLegacyExist = labels.some((lbl) => typeof pct[lbl] !== "undefined");
+          const pctLegacyExist = labels.some(
+            (lbl) => typeof pct[lbl] !== "undefined"
+          );
           if (pctLegacyExist) {
             update.$set["prizes.percentage.amounts"] = newPctAmounts;
             labels.forEach((lbl) => {
@@ -66,7 +71,10 @@ const Tournament = require("../models/Tournament");
         }
 
         // If update has nothing to set/unset, skip
-        if (Object.keys(update.$set).length === 0 && Object.keys(update.$unset).length === 0) {
+        if (
+          Object.keys(update.$set).length === 0 &&
+          Object.keys(update.$unset).length === 0
+        ) {
           continue;
         }
 
@@ -78,7 +86,9 @@ const Tournament = require("../models/Tournament");
 
         if (res.modifiedCount && res.modifiedCount > 0) {
           updated++;
-          console.log(`Migrated tournament ${t._id} -> update: ${JSON.stringify(update)}`);
+          console.log(
+            `Migrated tournament ${t._id} -> update: ${JSON.stringify(update)}`
+          );
         } else {
           console.log(`No update performed for ${t._id}`);
         }
