@@ -17,7 +17,7 @@ const {
 
 // @desc    Create a new tournament
 // @route   POST /api/tournaments
-// @access  Public
+// @access  Private
 exports.createTournament = asyncHandler(async (req, res) => {
   try {
     console.log("Request body:", JSON.stringify(req.body, null, 2));
@@ -196,9 +196,9 @@ exports.createTournament = asyncHandler(async (req, res) => {
         console.log("Prizes fixed object:", JSON.stringify(prizes.fixed));
 
         // Accept both new format (amounts array) and legacy keys ('1st','2nd',...)
-        if (Array.isArray(prizes.fixed.amounts)) {
+        if (Array.isArray(prizes.fixed)) {
           // Accept any-length amounts array
-          normalizedPrizes.fixed.amounts = prizes.fixed.amounts.map(
+          normalizedPrizes.fixed.amounts = prizes.fixed.map(
             (a) => parseFloat(a) || 0
           );
         } else {
