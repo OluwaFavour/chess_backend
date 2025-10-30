@@ -17,7 +17,7 @@ const {
 
 // @desc    Create a new tournament
 // @route   POST /api/tournaments
-// @access  Private
+// @access  Public
 exports.createTournament = asyncHandler(async (req, res) => {
   try {
     console.log("Request body:", JSON.stringify(req.body, null, 2));
