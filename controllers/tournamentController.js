@@ -22,33 +22,42 @@ exports.createTournament = asyncHandler(async (req, res) => {
   try {
     // Stream form input to stdout so we can inspect multipart/form-data easily in console
     try {
-      process.stdout.write('=== createTournament form input START ===\n');
-      process.stdout.write(JSON.stringify({ body: req.body }, null, 2) + '\n');
+      process.stdout.write("=== createTournament form input START ===\n");
+      process.stdout.write(JSON.stringify({ body: req.body }, null, 2) + "\n");
       if (req.file) {
-        process.stdout.write('uploadedFile: ' + JSON.stringify({
-          originalname: req.file.originalname,
-          mimetype: req.file.mimetype,
-          size: req.file.size,
-          path: req.file.path
-        }, null, 2) + '\n');
+        process.stdout.write(
+          "uploadedFile: " +
+            JSON.stringify(
+              {
+                originalname: req.file.originalname,
+                mimetype: req.file.mimetype,
+                size: req.file.size,
+                path: req.file.path,
+              },
+              null,
+              2
+            ) +
+            "\n"
+        );
       }
-      process.stdout.write('=== createTournament form input END ===\n');
+      process.stdout.write("=== createTournament form input END ===\n");
     } catch (streamErr) {
-      console.error('Error streaming form input:', streamErr);
+      console.error("Error streaming form input:", streamErr);
       console.log("Request body:", JSON.stringify(req.body, null, 2));
     }
 
     // Allow unauthenticated testing: derive organizer from req.user or an explicit body.organizer
-    const organizerId = req.user && req.user.id ? req.user.id : (req.body.organizer || null);
+    const organizerId =
+      req.user && req.user.id ? req.user.id : req.body.organizer || null;
     let organizerUser = null;
     if (organizerId) {
       if (!mongoose.Types.ObjectId.isValid(organizerId)) {
-        return res.status(400).json({ message: 'Invalid organizer id format' });
+        return res.status(400).json({ message: "Invalid organizer id format" });
       }
       // fetch organizer user to validate wallet operations later
       organizerUser = await User.findById(organizerId);
       if (!organizerUser) {
-        return res.status(404).json({ message: 'Organizer user not found' });
+        return res.status(404).json({ message: "Organizer user not found" });
       }
     }
 
@@ -373,6 +382,13 @@ exports.createTournament = asyncHandler(async (req, res) => {
         error: prizeCalcError.message,
       });
     }
+
+    console.log(
+      "Total Prize Pool:",
+      totalPrizePool,
+      "Entry Fee:",
+      parsedEntryFee
+    );
 
     // Check if entry fee is higher than total prize pool
     if (parsedEntryFee > totalPrizePool) {
