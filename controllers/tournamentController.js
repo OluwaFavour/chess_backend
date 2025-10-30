@@ -17,49 +17,10 @@ const {
 
 // @desc    Create a new tournament
 // @route   POST /api/tournaments
-// @access  Public
+// @access  Private
 exports.createTournament = asyncHandler(async (req, res) => {
   try {
-    // Stream form input to stdout so we can inspect multipart/form-data easily in console
-    try {
-      process.stdout.write("=== createTournament form input START ===\n");
-      process.stdout.write(JSON.stringify({ body: req.body }, null, 2) + "\n");
-      if (req.file) {
-        process.stdout.write(
-          "uploadedFile: " +
-            JSON.stringify(
-              {
-                originalname: req.file.originalname,
-                mimetype: req.file.mimetype,
-                size: req.file.size,
-                path: req.file.path,
-              },
-              null,
-              2
-            ) +
-            "\n"
-        );
-      }
-      process.stdout.write("=== createTournament form input END ===\n");
-    } catch (streamErr) {
-      console.error("Error streaming form input:", streamErr);
-      console.log("Request body:", JSON.stringify(req.body, null, 2));
-    }
-
-    // Allow unauthenticated testing: derive organizer from req.user or an explicit body.organizer
-    const organizerId =
-      req.user && req.user.id ? req.user.id : req.body.organizer || null;
-    let organizerUser = null;
-    if (organizerId) {
-      if (!mongoose.Types.ObjectId.isValid(organizerId)) {
-        return res.status(400).json({ message: "Invalid organizer id format" });
-      }
-      // fetch organizer user to validate wallet operations later
-      organizerUser = await User.findById(organizerId);
-      if (!organizerUser) {
-        return res.status(404).json({ message: "Organizer user not found" });
-      }
-    }
+    console.log("Request body:", JSON.stringify(req.body, null, 2));
 
     const {
       title,
@@ -235,9 +196,9 @@ exports.createTournament = asyncHandler(async (req, res) => {
         console.log("Prizes fixed object:", JSON.stringify(prizes.fixed));
 
         // Accept both new format (amounts array) and legacy keys ('1st','2nd',...)
-        if (Array.isArray(prizes.fixed.amounts)) {
+        if (Array.isArray(prizes.fixed)) {
           // Accept any-length amounts array
-          normalizedPrizes.fixed.amounts = prizes.fixed.amounts.map(
+          normalizedPrizes.fixed.amounts = prizes.fixed.map(
             (a) => parseFloat(a) || 0
           );
         } else {
@@ -383,13 +344,6 @@ exports.createTournament = asyncHandler(async (req, res) => {
       });
     }
 
-    console.log(
-      "Total Prize Pool:",
-      totalPrizePool,
-      "Entry Fee:",
-      parsedEntryFee
-    );
-
     // Check if entry fee is higher than total prize pool
     if (parsedEntryFee > totalPrizePool) {
       // Log the discrepancy for debugging
@@ -408,15 +362,11 @@ exports.createTournament = asyncHandler(async (req, res) => {
 
     // Handle funding method
     if (fundingMethod === "wallet") {
-      // Wallet funding requires an authenticated or explicitly provided organizer
-      if (!organizerUser) {
-        return res.status(400).json({
-          message:
-            "Wallet funding requires an authenticated organizer or a valid organizer id in the request body",
-        });
-      }
       try {
-        const user = organizerUser; // validated above
+        const user = await User.findById(req.user.id);
+        if (!user) {
+          return res.status(404).json({ message: "User not found" });
+        }
 
         if (user.walletBalance < totalPrizePool) {
           return res.status(400).json({
@@ -460,7 +410,7 @@ exports.createTournament = asyncHandler(async (req, res) => {
         prizes: normalizedPrizes,
         entryFee: parsedEntryFee,
         fundingMethod,
-        organizer: organizerId || null,
+        organizer: req.user.id,
         tournamentLink,
         password: password || null,
       });
@@ -468,10 +418,10 @@ exports.createTournament = asyncHandler(async (req, res) => {
       console.log("Tournament created successfully:", tournament._id);
 
       // Create transaction record
-      if (fundingMethod === "wallet" && organizerId) {
+      if (fundingMethod === "wallet") {
         try {
           const transaction = await Transaction.create({
-            user: organizerId,
+            user: req.user.id,
             tournament: tournament._id,
             type: "tournament_funding",
             amount: totalPrizePool,
@@ -485,13 +435,11 @@ exports.createTournament = asyncHandler(async (req, res) => {
         }
       }
 
-      // Add tournament to organizer's created tournaments if organizer present
-      if (organizerId) {
-        await User.findByIdAndUpdate(organizerId, {
-          $push: { createdTournaments: tournament._id },
-        });
-        console.log("Tournament added to user's created tournaments");
-      }
+      // Add tournament to user's created tournaments
+      await User.findByIdAndUpdate(req.user.id, {
+        $push: { createdTournaments: tournament._id },
+      });
+      console.log("Tournament added to user's created tournaments");
 
       // Schedule tournament reminder using Luxon
       await scheduleTournamentReminder(

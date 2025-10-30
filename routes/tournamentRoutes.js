@@ -17,8 +17,7 @@ router.get("/", getTournaments);
 router.get("/:id", getTournament);
 
 // Protected routes
-// Temporarily allow unauthenticated creation for testing prize calculations
-router.post("/", upload.single("banner"), createTournament);
+router.post("/", protect, upload.single("banner"), createTournament);
 router.post("/:id/register", protect, registerForTournament);
 router.put("/:id/status", protect, updateTournamentStatus);
 
