@@ -9,7 +9,7 @@ const TournamentSchema = new mongoose.Schema({
   },
   category: {
     type: String,
-    enum: ["bullet", "blitz", "rapid", "classical"],
+    enum: ["bullet", "blitz", "rapid", "classical", "960", "crazyhouse"],
     required: [true, "Tournament category is required"],
   },
   banner: {
