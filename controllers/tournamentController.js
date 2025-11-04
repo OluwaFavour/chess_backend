@@ -1434,13 +1434,17 @@ cron.schedule("*/2 * * * *", async () => {
 // @access  Private (Organizer only)
 exports.distributeTournamentPrizes = asyncHandler(async (req, res) => {
   try {
+    console.log("distributeTournamentPrizes: start", {
+      tournamentId: req.params.tournamentId,
+    });
     const { tournamentId } = req.params;
     const { prizeDistribution } = req.body; // Array of { userId, position, customAmount (optional) }
 
-    console.log(
-      "Prize distribution request:",
-      JSON.stringify(req.body, null, 2)
-    );
+    console.log("Prize distribution request received", {
+      prizeCount: Array.isArray(prizeDistribution)
+        ? prizeDistribution.length
+        : 0,
+    });
 
     // Validate request body
     if (
@@ -1508,6 +1512,11 @@ exports.distributeTournamentPrizes = asyncHandler(async (req, res) => {
     let totalDistributedAmount = 0;
 
     for (const prize of prizeDistribution) {
+      console.log("processing prize item", {
+        userId: prize.userId,
+        position: prize.position,
+        customAmount: prize.customAmount ? true : false,
+      });
       let prizeAmount = 0;
       const position = prize.position; // e.g., '1st', '2nd', '3rd', etc.
 
@@ -1581,6 +1590,11 @@ exports.distributeTournamentPrizes = asyncHandler(async (req, res) => {
       // Use custom amount if provided (for flexibility)
       if (prize.customAmount && prize.customAmount > 0) {
         prizeAmount = prize.customAmount;
+        console.log("using customAmount for prize", {
+          userId: prize.userId,
+          position,
+          customAmount: prize.customAmount,
+        });
       }
 
       if (prizeAmount <= 0) {
@@ -1597,34 +1611,58 @@ exports.distributeTournamentPrizes = asyncHandler(async (req, res) => {
         amount: prizeAmount,
       });
 
+      console.log("calculated prize", {
+        userId: prize.userId,
+        position,
+        amount: prizeAmount,
+      });
+
       totalDistributedAmount += prizeAmount;
     }
 
-    console.log("Calculated prizes:", calculatedPrizes);
+    console.log("Calculated prizes count", calculatedPrizes.length);
     console.log("Total amount to distribute:", totalDistributedAmount);
 
     // Start database transaction for atomic operations
     const session = await mongoose.startSession();
+    console.log("Mongo session started");
     session.startTransaction();
 
     try {
       const results = [];
 
       for (const prize of calculatedPrizes) {
+        console.log("transaction: finding user", { userId: prize.userId });
         // Find the user
         const user = await User.findById(prize.userId).session(session);
         if (!user) {
+          console.error("transaction: user not found", {
+            userId: prize.userId,
+          });
           throw new Error(`User not found: ${prize.userId}`);
         }
 
         // Update user wallet balance
-        user.walletBalance += prize.amount;
+        const previousBalance = Number(user.walletBalance) || 0;
+        const newBalance = previousBalance + Number(prize.amount || 0);
+        console.log("transaction: updating wallet", {
+          userId: user._id.toString(),
+          previousBalance,
+          newBalance,
+        });
+        user.walletBalance = newBalance;
         await user.save({ session });
+        console.log("transaction: user saved", { userId: user._id.toString() });
 
         // Create transaction record
-        const transactionReference = `PRIZE-${tournamentId.slice(
-          -8
-        )}-${prize.userId.slice(-8)}-${Date.now()}`;
+        const transactionReference = `PRIZE-${tournamentId.slice(-8)}-${String(
+          prize.userId
+        ).slice(-8)}-${Date.now()}`;
+        console.log("transaction: creating transaction record", {
+          reference: transactionReference,
+          userId: prize.userId,
+          amount: prize.amount,
+        });
 
         const transaction = await Transaction.create(
           [
@@ -1649,14 +1687,31 @@ exports.distributeTournamentPrizes = asyncHandler(async (req, res) => {
           { session }
         );
 
-        // Use notifyTournamentWinner instead of createNotification
-        await notifyTournamentWinner(
-          prize.userId,
-          tournamentId,
-          tournament.title,
-          prize.position,
-          prize.amount
-        );
+        console.log("transaction: transaction record created", {
+          transactionId: transaction[0]._id.toString(),
+        });
+
+        // Notify winner OUTSIDE core transaction logic if possible; but catch errors to avoid abort
+        try {
+          console.log("notification: sending winner notification", {
+            userId: prize.userId,
+            amount: prize.amount,
+          });
+          await notifyTournamentWinner(
+            prize.userId,
+            tournamentId,
+            tournament.title,
+            prize.position,
+            prize.amount
+          );
+          console.log("notification: sent", { userId: prize.userId });
+        } catch (notifyErr) {
+          // Log but don't abort the DB transaction - notifications shouldn't break prize payout
+          console.error("notification: failed to send winner notification", {
+            userId: prize.userId,
+            error: notifyErr && notifyErr.message,
+          });
+        }
 
         results.push({
           userId: prize.userId,
@@ -1669,6 +1724,9 @@ exports.distributeTournamentPrizes = asyncHandler(async (req, res) => {
       }
 
       // Update tournament status to indicate prizes have been distributed
+      console.log("transaction: updating tournament metadata", {
+        tournamentId,
+      });
       await Tournament.findByIdAndUpdate(
         tournamentId,
         {
@@ -1682,9 +1740,13 @@ exports.distributeTournamentPrizes = asyncHandler(async (req, res) => {
       );
 
       // Commit the transaction
+      console.log("transaction: committing");
       await session.commitTransaction();
+      console.log("transaction: committed successfully");
 
-      console.log("Prize distribution successful:", results);
+      console.log("Prize distribution successful", {
+        winnerCount: results.length,
+      });
 
       res.status(200).json({
         success: true,
@@ -1699,10 +1761,21 @@ exports.distributeTournamentPrizes = asyncHandler(async (req, res) => {
       });
     } catch (transactionError) {
       // Rollback the transaction
-      await session.abortTransaction();
+      console.error("transaction: error, aborting transaction", {
+        error: transactionError && transactionError.message,
+      });
+      try {
+        await session.abortTransaction();
+        console.log("transaction: aborted");
+      } catch (abortErr) {
+        console.error("transaction: abort failed", {
+          error: abortErr && abortErr.message,
+        });
+      }
       throw transactionError;
     } finally {
       session.endSession();
+      console.log("Mongo session ended");
     }
   } catch (error) {
     console.error("Prize distribution error:", error);
