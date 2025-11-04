@@ -1623,160 +1623,223 @@ exports.distributeTournamentPrizes = asyncHandler(async (req, res) => {
     console.log("Calculated prizes count", calculatedPrizes.length);
     console.log("Total amount to distribute:", totalDistributedAmount);
 
-    // Start database transaction for atomic operations
-    const session = await mongoose.startSession();
-    console.log("Mongo session started");
-    session.startTransaction();
+    // Start database transaction with retry for transient errors
+    const MAX_TXN_RETRIES = 3;
+    let attempt = 0;
+    let committed = false;
+    let finalResults = [];
+    const notificationsToSend = [];
 
-    try {
-      const results = [];
+    while (attempt < MAX_TXN_RETRIES && !committed) {
+      attempt += 1;
+      const session = await mongoose.startSession();
+      console.log("Mongo session started, attempt", attempt);
 
-      for (const prize of calculatedPrizes) {
-        console.log("transaction: finding user", { userId: prize.userId });
-        // Find the user
-        const user = await User.findById(prize.userId).session(session);
-        if (!user) {
-          console.error("transaction: user not found", {
-            userId: prize.userId,
-          });
-          throw new Error(`User not found: ${prize.userId}`);
-        }
+      try {
+        session.startTransaction();
+        const results = [];
 
-        // Update user wallet balance
-        const previousBalance = Number(user.walletBalance) || 0;
-        const newBalance = previousBalance + Number(prize.amount || 0);
-        console.log("transaction: updating wallet", {
-          userId: user._id.toString(),
-          previousBalance,
-          newBalance,
-        });
-        user.walletBalance = newBalance;
-        await user.save({ session });
-        console.log("transaction: user saved", { userId: user._id.toString() });
-
-        // Create transaction record
-        const transactionReference = `PRIZE-${tournamentId.slice(-8)}-${String(
-          prize.userId
-        ).slice(-8)}-${Date.now()}`;
-        console.log("transaction: creating transaction record", {
-          reference: transactionReference,
-          userId: prize.userId,
-          amount: prize.amount,
-        });
-
-        const transaction = await Transaction.create(
-          [
-            {
-              user: prize.userId,
-              tournament: tournamentId,
-              type: "prize_payout",
-              amount: prize.amount,
-              reference: transactionReference,
-              paymentMethod: "wallet",
-              status: "completed",
-              details: {
-                position: prize.position,
-                tournamentTitle: tournament.title,
-              },
-              metadata: {
-                distributedBy: req.user.id,
-                distributionDate: new Date(),
-              },
-            },
-          ],
-          { session }
-        );
-
-        console.log("transaction: transaction record created", {
-          transactionId: transaction[0]._id.toString(),
-        });
-
-        // Notify winner OUTSIDE core transaction logic if possible; but catch errors to avoid abort
-        try {
-          console.log("notification: sending winner notification", {
+        for (const prize of calculatedPrizes) {
+          console.log("transaction: incrementing wallet via $inc", {
             userId: prize.userId,
             amount: prize.amount,
           });
-          await notifyTournamentWinner(
+
+          // Atomically increment the user's wallet to reduce write-conflicts
+          const user = await User.findByIdAndUpdate(
             prize.userId,
-            tournamentId,
-            tournament.title,
-            prize.position,
-            prize.amount
+            { $inc: { walletBalance: Number(prize.amount || 0) } },
+            { new: true, session }
           );
-          console.log("notification: sent", { userId: prize.userId });
-        } catch (notifyErr) {
-          // Log but don't abort the DB transaction - notifications shouldn't break prize payout
-          console.error("notification: failed to send winner notification", {
+
+          if (!user) {
+            console.error("transaction: user not found during $inc", {
+              userId: prize.userId,
+            });
+            throw new Error(`User not found: ${prize.userId}`);
+          }
+
+          console.log("transaction: user updated", {
+            userId: user._id.toString(),
+            newWalletBalance: user.walletBalance,
+          });
+
+          // Create transaction record
+          const transactionReference = `PRIZE-${tournamentId.slice(
+            -8
+          )}-${String(prize.userId).slice(-8)}-${Date.now()}`;
+          console.log("transaction: creating transaction record", {
+            reference: transactionReference,
             userId: prize.userId,
-            error: notifyErr && notifyErr.message,
+            amount: prize.amount,
+          });
+
+          const transaction = await Transaction.create(
+            [
+              {
+                user: prize.userId,
+                tournament: tournamentId,
+                type: "prize_payout",
+                amount: prize.amount,
+                reference: transactionReference,
+                paymentMethod: "wallet",
+                status: "completed",
+                details: {
+                  position: prize.position,
+                  tournamentTitle: tournament.title,
+                },
+                metadata: {
+                  distributedBy: req.user.id,
+                  distributionDate: new Date(),
+                },
+              },
+            ],
+            { session }
+          );
+
+          console.log("transaction: transaction record created", {
+            transactionId: transaction[0]._id.toString(),
+          });
+
+          // Defer notifications until after commit
+          notificationsToSend.push({
+            userId: prize.userId,
+            amount: prize.amount,
+            position: prize.position,
+          });
+
+          results.push({
+            userId: prize.userId,
+            userName: user.fullName,
+            position: prize.position,
+            amount: prize.amount,
+            transactionId: transaction[0]._id,
+            newWalletBalance: user.walletBalance,
           });
         }
 
-        results.push({
-          userId: prize.userId,
-          userName: user.fullName,
-          position: prize.position,
-          amount: prize.amount,
-          transactionId: transaction[0]._id,
-          newWalletBalance: user.walletBalance,
-        });
-      }
-
-      // Update tournament status to indicate prizes have been distributed
-      console.log("transaction: updating tournament metadata", {
-        tournamentId,
-      });
-      await Tournament.findByIdAndUpdate(
-        tournamentId,
-        {
-          $set: {
-            "metadata.prizesDistributed": true,
-            "metadata.prizeDistributionDate": new Date(),
-            "metadata.distributedBy": req.user.id,
-          },
-        },
-        { session }
-      );
-
-      // Commit the transaction
-      console.log("transaction: committing");
-      await session.commitTransaction();
-      console.log("transaction: committed successfully");
-
-      console.log("Prize distribution successful", {
-        winnerCount: results.length,
-      });
-
-      res.status(200).json({
-        success: true,
-        message: "Prizes distributed successfully",
-        data: {
+        // Update tournament metadata within the same transaction
+        console.log("transaction: updating tournament metadata", {
           tournamentId,
-          tournamentTitle: tournament.title,
-          totalDistributed: totalDistributedAmount,
-          winners: results,
-          distributionDate: new Date(),
-        },
-      });
-    } catch (transactionError) {
-      // Rollback the transaction
-      console.error("transaction: error, aborting transaction", {
-        error: transactionError && transactionError.message,
-      });
+        });
+        await Tournament.findByIdAndUpdate(
+          tournamentId,
+          {
+            $set: {
+              "metadata.prizesDistributed": true,
+              "metadata.prizeDistributionDate": new Date(),
+              "metadata.distributedBy": req.user.id,
+            },
+          },
+          { session }
+        );
+
+        // Commit
+        console.log("transaction: committing");
+        await session.commitTransaction();
+        console.log("transaction: committed successfully");
+
+        committed = true;
+        finalResults = results;
+
+        // end session for this attempt
+        session.endSession();
+      } catch (txnErr) {
+        console.error("transaction attempt error", {
+          attempt,
+          error: txnErr && txnErr.message,
+        });
+        try {
+          await session.abortTransaction();
+          console.log("transaction: aborted");
+        } catch (abortErr) {
+          console.error("transaction: abort failed", {
+            error: abortErr && abortErr.message,
+          });
+        }
+        session.endSession();
+
+        // If transient, retry with exponential backoff
+        const isTransient = (err) => {
+          try {
+            if (!err) return false;
+            if (
+              typeof err.hasErrorLabel === "function" &&
+              err.hasErrorLabel("TransientTransactionError")
+            )
+              return true;
+            if (
+              err.errorLabelSet &&
+              typeof err.errorLabelSet.has === "function" &&
+              err.errorLabelSet.has("TransientTransactionError")
+            )
+              return true;
+            if (err.code === 112 || err.codeName === "WriteConflict")
+              return true;
+            return false;
+          } catch (e) {
+            return false;
+          }
+        };
+
+        if (isTransient(txnErr) && attempt < MAX_TXN_RETRIES) {
+          const backoff =
+            Math.pow(2, attempt) * 100 + Math.floor(Math.random() * 100);
+          console.log("transaction: transient error, retrying after backoff", {
+            attempt,
+            backoff,
+          });
+          await new Promise((r) => setTimeout(r, backoff));
+          continue; // retry
+        }
+
+        // Non-transient or max attempts exhausted
+        throw txnErr;
+      }
+    }
+
+    if (!committed) {
+      throw new Error("Failed to commit transaction after retries");
+    }
+
+    // Send notifications after commit (best-effort)
+    for (const n of notificationsToSend) {
       try {
-        await session.abortTransaction();
-        console.log("transaction: aborted");
-      } catch (abortErr) {
-        console.error("transaction: abort failed", {
-          error: abortErr && abortErr.message,
+        console.log("notification: sending after commit", {
+          userId: n.userId,
+          amount: n.amount,
+        });
+        await notifyTournamentWinner(
+          n.userId,
+          tournamentId,
+          tournament.title,
+          n.position,
+          n.amount
+        );
+        console.log("notification: sent after commit", { userId: n.userId });
+      } catch (notifyErr) {
+        console.error("notification: failed after commit", {
+          userId: n.userId,
+          error: notifyErr && notifyErr.message,
         });
       }
-      throw transactionError;
-    } finally {
-      session.endSession();
-      console.log("Mongo session ended");
     }
+
+    console.log("Prize distribution successful", {
+      winnerCount: finalResults.length,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Prizes distributed successfully",
+      data: {
+        tournamentId,
+        tournamentTitle: tournament.title,
+        totalDistributed: totalDistributedAmount,
+        winners: finalResults,
+        distributionDate: new Date(),
+      },
+    });
   } catch (error) {
     console.error("Prize distribution error:", error);
     res.status(500).json({
